@@ -320,20 +320,28 @@ if page == "Send Campaign":
     if st.session_state.current_step >= 2 and st.session_state.df_processed is not None:
         st.subheader("✍️ Step 2: Generate Messages")
         
-        if 'Generated_Message' not in st.session_state.df_processed.columns:
+        # Check if messages are already generated
+        has_messages = 'Generated_Message' in st.session_state.df_processed.columns
+        
+        if not has_messages:
             col1, col2 = st.columns([3, 1])
             with col1:
                 st.info("Click below to generate personalized messages for each customer")
             with col2:
-                if st.button("🎯 Generate Messages", type="primary", use_container_width=True):
-                    with st.spinner("Generating personalized messages..."):
-                        df_processed = generate_messages_batch(st.session_state.df_processed)
-                        st.session_state.df_processed = df_processed
-                        st.session_state.messages_generated = True
-                        st.session_state.current_step = 3
-                        st.success("✅ Messages generated successfully!")
-                        st.rerun()
+                if st.button("🎯 Generate Messages", type="primary", use_container_width=True, key="gen_msg_btn"):
+                    df_processed = generate_messages_batch(st.session_state.df_processed)
+                    st.session_state.df_processed = df_processed
+                    st.session_state.messages_generated = True
+                    st.session_state.current_step = 3
+                    st.success("✅ Messages generated successfully!")
+                    time.sleep(0.5)
+                    st.rerun()
         else:
+            # Messages already exist, auto-advance to step 3
+            if st.session_state.current_step == 2:
+                st.session_state.current_step = 3
+                st.rerun()
+            
             st.success("✅ Messages already generated!")
             
             with st.expander("👀 Preview Generated Messages", expanded=True):
@@ -344,10 +352,11 @@ if page == "Send Campaign":
                         st.text(row.get('Generated_Message', 'No message'))
                         st.markdown("---")
             
-            if st.button("🔄 Regenerate All Messages"):
-                df_processed = generate_messages_batch(st.session_state.df_processed)
-                st.session_state.df_processed = df_processed
-                st.success("✅ Messages regenerated!")
+            if st.button("🔄 Regenerate All Messages", key="regen_msg_btn"):
+                # Remove old messages and regenerate
+                if 'Generated_Message' in st.session_state.df_processed.columns:
+                    st.session_state.df_processed = st.session_state.df_processed.drop(columns=['Generated_Message'])
+                st.session_state.current_step = 2
                 st.rerun()
 
     if (st.session_state.current_step >= 3 and 
