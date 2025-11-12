@@ -31,6 +31,8 @@ if "df_processed" not in st.session_state:
     st.session_state.df_processed = None
 if "messages_generated" not in st.session_state:
     st.session_state.messages_generated = False
+if "campaign_sent" not in st.session_state:
+    st.session_state.campaign_sent = False
 
 # ================== UTILITY FUNCTIONS ==================
 def check_csv(df):
@@ -52,12 +54,10 @@ def generate_message(business_name, customer_name, service_type=""):
 
 def generate_messages_batch(df):
     """Generate messages for entire dataframe"""
-    # Create a copy to avoid modifying the original
     df_processed = df.copy()
     messages = []
     
     for idx, row in df_processed.iterrows():
-        # Skip rows with missing data
         if pd.isna(row['Customer Name']) or pd.isna(row['Business Name']):
             messages.append("")
             continue
@@ -67,11 +67,8 @@ def generate_messages_batch(df):
             str(row["Customer Name"])
         )
         messages.append(message)
-        st.write(f"✅ Generated message for {row['Customer Name']}: {message}")
     
-    # CRITICAL FIX: Assign to the DataFrame copy
     df_processed["Generated_Message"] = messages
-    st.session_state.messages_generated = True
     return df_processed
 
 def send_sms(df):
@@ -83,20 +80,15 @@ def send_sms(df):
     
     for i, row in df.iterrows():
         try:
-            # Skip rows with missing data
             if pd.isna(row['Customer Name']) or pd.isna(row['Phone']):
                 continue
                 
-            # Check if message exists
             if 'Generated_Message' not in df.columns or pd.isna(row['Generated_Message']):
                 st.error(f"❌ No generated message for {row['Customer Name']}")
                 failed += 1
                 continue
             
             message = f"{row['Generated_Message']} {row['Review Link']} Reply STOP to opt out."
-            
-            st.write(f"📱 Sending to: {row['Phone']}")
-            st.write(f"Message: {message}")
             
             # Send SMS
             twilio_client.messages.create(
@@ -109,7 +101,6 @@ def send_sms(df):
                 df['SMS_Status'] = ''
             df.at[i, "SMS_Status"] = "✅"
             sent += 1
-            st.success(f"✅ SMS sent to: {row['Phone']}")
             
         except Exception as e:
             if 'SMS_Status' not in df.columns:
@@ -119,7 +110,6 @@ def send_sms(df):
             df.at[i, "SMS_Status"] = "❌"
             df.at[i, "Error"] = str(e)
             failed += 1
-            st.error(f"❌ SMS failed: {str(e)}")
     
     return df, sent, failed
 
@@ -147,8 +137,9 @@ if page == "Send Campaign":
             mime="text/csv"
         )
 
+    # STEP 1: Upload CSV
     st.subheader("Step 1: Upload CSV")
-    uploaded_file = st.file_uploader("Customer CSV", type="csv")
+    uploaded_file = st.file_uploader("Customer CSV", type="csv", key="uploader")
     
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
@@ -161,52 +152,63 @@ if page == "Send Campaign":
             with st.expander("Preview Data"):
                 st.dataframe(df)
 
-    if st.session_state.df_processed is not None:
-        df = st.session_state.df_processed
-        
+    # STEP 2: Generate Messages (only show if CSV uploaded)
+    if st.session_state.df_processed is not None and not st.session_state.campaign_sent:
         st.subheader("Step 2: Generate Messages")
-        if st.button("Generate Messages", type="primary"):
-            with st.spinner("Generating messages..."):
-                df_processed = generate_messages_batch(df)
-                st.session_state.df_processed = df_processed
-                st.success("✅ Messages generated!")
-                
-                with st.expander("Preview Messages"):
-                    for idx, row in df_processed.iterrows():
-                        if not pd.isna(row['Customer Name']):
-                            st.write(f"**{row['Customer Name']}**: {row.get('Generated_Message', 'No message')}")
-
-        # Check if messages were generated
-        if (st.session_state.df_processed is not None and 
-            'Generated_Message' in st.session_state.df_processed.columns):
+        
+        if st.button("Generate Messages", type="primary", key="generate_btn"):
+            df_processed = generate_messages_batch(st.session_state.df_processed)
+            st.session_state.df_processed = df_processed
+            st.session_state.messages_generated = True
+            st.success("✅ Messages generated!")
             
-            st.subheader("Step 3: Send Campaign")
-            confirm_send = st.checkbox("I have permission to contact these customers")
-            business_name = st.text_input("Business Name", value="Test Business")
+            with st.expander("Preview Messages"):
+                for idx, row in df_processed.iterrows():
+                    if not pd.isna(row['Customer Name']):
+                        st.write(f"**{row['Customer Name']}**: {row.get('Generated_Message', 'No message')}")
 
-            if st.button("🚀 Launch Campaign", type="primary") and confirm_send and business_name:
-                df = st.session_state.df_processed
-                
-                # Initialize status columns
-                for col in ['SMS_Status', 'Error']:
-                    if col not in df.columns:
-                        df[col] = ''
+    # STEP 3: Send Campaign (only show if messages generated)
+    if (st.session_state.df_processed is not None and 
+        'Generated_Message' in st.session_state.df_processed.columns and
+        not st.session_state.campaign_sent):
+        
+        st.subheader("Step 3: Send Campaign")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            confirm_send = st.checkbox("I have permission to contact these customers", key="permission")
+        with col2:
+            business_name = st.text_input("Business Name", value="Test Business", key="business_name")
+        
+        if st.button("🚀 Launch Campaign", type="primary", key="launch_btn") and confirm_send and business_name:
+            df = st.session_state.df_processed.copy()
+            
+            # Initialize status columns
+            for col in ['SMS_Status', 'Error']:
+                if col not in df.columns:
+                    df[col] = ''
 
-                st.info("Campaign starting...")
-                
-                st.subheader("📱 Sending SMS...")
-                df, sms_sent, sms_failed = send_sms(df)
-                
-                # Update session state
-                st.session_state.df_processed = df
-                
-                st.balloons()
-                st.success(f"🎉 Campaign completed! SMS sent: {sms_sent}, Failed: {sms_failed}")
-                
-                with st.expander("Campaign Results"):
-                    st.dataframe(df[["Customer Name", "Phone", "SMS_Status", "Error"]].fillna(""))
-        else:
-            st.info("👆 Generate messages first to enable campaign sending")
+            st.info("Campaign starting...")
+            
+            # Send SMS
+            df, sms_sent, sms_failed = send_sms(df)
+            
+            # Update session state
+            st.session_state.df_processed = df
+            st.session_state.campaign_sent = True
+            
+            st.balloons()
+            st.success(f"🎉 Campaign completed! SMS sent: {sms_sent}, Failed: {sms_failed}")
+            
+            with st.expander("Campaign Results"):
+                st.dataframe(df[["Customer Name", "Phone", "SMS_Status", "Error"]].fillna(""))
+            
+            # Reset button
+            if st.button("🔄 Start New Campaign"):
+                st.session_state.df_processed = None
+                st.session_state.messages_generated = False
+                st.session_state.campaign_sent = False
+                st.rerun()
 
 elif page == "Settings":
     st.header("⚙️ Settings")
@@ -215,4 +217,3 @@ elif page == "Settings":
 
 st.markdown("---")
 st.markdown("🌿 **ReviewGarden** - Grow your reputation honestly")
-
