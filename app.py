@@ -76,12 +76,16 @@ def check_csv(df):
     return True
 
 def generate_ai_message(business_name, customer_name, service_type=""):
+    st.write(f"🔧 DEBUG: Generating message for {customer_name} at {business_name}")
+    
     if not client:
+        st.error("❌ OpenAI client not configured")
         return f"Hi {customer_name}! Hope you enjoyed your experience at {business_name}. Please leave us a review!"
     
     prompt = f"Write a friendly SMS under 150 chars asking {customer_name} to leave a Google review for {business_name}. Warm, casual tone."
     
     try:
+        st.write(f"🔧 DEBUG: Calling OpenAI API...")
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
@@ -91,8 +95,11 @@ def generate_ai_message(business_name, customer_name, service_type=""):
             max_tokens=100,
             temperature=0.7
         )
-        return response.choices[0].message.content.strip()
+        message = response.choices[0].message.content.strip()
+        st.write(f"🔧 DEBUG: OpenAI response: {message}")
+        return message
     except Exception as e:
+        st.error(f"❌ OpenAI API error: {e}")
         return f"Hi {customer_name}! Hope you enjoyed your experience at {business_name}. Please leave us a review!"
 
 def gmail_auth():
@@ -392,4 +399,5 @@ elif page == "Settings":
 
 st.markdown("---")
 st.markdown("🌿 **ReviewGarden** - Grow your reputation honestly")
+
 
