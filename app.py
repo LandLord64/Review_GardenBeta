@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import openai
+from openai import OpenAI
 import os
 import io
 import pickle
@@ -275,45 +275,29 @@ if page=="Send Campaign":
                     confirm_send = st.checkbox("I have permission to contact these customers")
                     business_name = st.text_input("Business Name", value=df["Business Name"].iloc[0] if len(df["Business Name"].unique())==1 else "")
 
-                if st.button("🚀 Launch Campaign") and confirm_send and business_name:
-                    total_sent=0
-                    st.info("Campaign started...")
-                    
-                    # Initialize status columns
-                    for col in ['SMS_Status','Email_Status','Error']:
-                        if col not in df.columns: df[col]=''
-                    
-                    if delivery in ["SMS only","Both"]:
-                        st.subheader("📱 Sending SMS...")
-                        df,sms_sent,sms_failed=send_sms(df)
-                        total_sent+=sms_sent
-                        st.success(f"SMS: {sms_sent} sent, {sms_failed} failed")
-                    
-                    if delivery in ["Email only","Both"]:
-                        st.subheader("📧 Sending Emails...")
-                        df,email_sent,email_failed=send_email(df,email_subject)
-                        total_sent+=email_sent
-                        st.success(f"Emails: {email_sent} sent, {email_failed} failed")
-                    
-                    if log_campaign_to_sheet(df, delivery, business_name):
-                        st.success("✅ Campaign logged to history")
-                    
-                    st.balloons()
-                    st.success(f"🎉 Campaign completed! Total messages sent: {total_sent}")
-                    
-                    with st.expander("Campaign Results"):
-                        st.dataframe(df[["Customer Name","SMS_Status","Email_Status","Error"]].fillna(""))
-                    
-                    st.download_button(
-                        "📥 Download Results", 
-                        df.to_csv(index=False), 
-                        file_name=f"campaign_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", 
-                        mime="text/csv"
-                    )
-            else:
-                st.info("👆 Complete Step 2 first to generate messages")
-        else:
-            st.info("👆 Complete Step 1 first")
+        if st.button("🚀 Launch Campaign") and confirm_send and business_name:
+            total_sent=0
+            st.info("Campaign started...")
+            for col in ['SMS_Status','Email_Status','Error']:
+                if col not in df.columns: df[col]=''
+            if delivery in ["SMS only","Both"]:
+                st.subheader("📱 Sending SMS...")
+                df,sms_sent,sms_failed=send_sms(df)
+                total_sent+=sms_sent
+                st.success(f"SMS: {sms_sent} sent, {sms_failed} failed")
+            if delivery in ["Email only","Both"]:
+                st.subheader("📧 Sending Emails...")
+                df,email_sent,email_failed=send_email(df,email_subject)
+                total_sent+=email_sent
+                st.success(f"Emails: {email_sent} sent, {email_failed} failed")
+            if log_campaign_to_sheet(df, delivery, business_name):
+                st.success("✅ Campaign logged to history")
+            st.balloons()
+            st.success(f"🎉 Campaign completed! Total messages sent: {total_sent}")
+            with st.expander("Campaign Results"):
+                st.dataframe(df[["Customer Name","SMS_Status","Email_Status","Error"]].fillna(""))
+            st.download_button("📥 Download Results", df.to_csv(index=False), file_name=f"campaign_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", mime="text/csv")
+            st.session_state.df_processed = None
 
 elif page=="Campaign History":
     st.header("📊 Campaign History")
@@ -353,10 +337,10 @@ elif page=="Settings":
     """)
     st.subheader("Getting Google Review Links")
     st.markdown("""
-    1. Go to Google Business Profile
+    1. Go to [Google Business Profile](https://business.google.com)
     2. Click 'Get more reviews'
-    3. Copy URL to CSV
-    Format: `https://search.google.com/local/writereview?placeid=YOUR_PLACE_ID`
+    3. Copy the generated URL
+    4. Use in your CSV under 'Review Link'
     """)
 
 st.markdown("---")
