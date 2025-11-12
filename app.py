@@ -1,491 +1,317 @@
-import streamlit as st
-import pandas as pd
-import os
-import io
-import random
-import re
-import time
-from datetime import datetime
-from twilio.rest import Client
-from dotenv import load_dotenv
+# Enhanced Features for ReviewGarden
 
-# ================== LOAD ENV ==================
-load_dotenv()
+# ==================== 1. IMPROVED STATE MANAGEMENT ====================
+def init_session_state():
+    """Initialize all session state variables in one place"""
+    defaults = {
+        "df_processed": None,
+        "messages_generated": False,
+        "campaign_sent": False,
+        "current_step": 1,
+        "test_mode": False,
+        "campaign_results": None,
+        "opt_out_list": set(),  # NEW: Track opt-outs
+        "campaign_history": [],  # NEW: Store all campaigns
+    }
+    for key, default in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default
 
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE = os.getenv("TWILIO_PHONE_NUMBER")
-
-st.set_page_config(page_title="ReviewGarden", page_icon="🌿", layout="wide")
-st.title("🌿 ReviewGarden - Review Booster")
-
-# ================== INIT SERVICES ==================
-@st.cache_resource
-def init_twilio():
-    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+# ==================== 2. ENHANCED MESSAGE GENERATION ====================
+def generate_smart_message(business_name, customer_name, service_type="", 
+                          service_date="", customer_tier="standard"):
+    """
+    Enhanced message generation with:
+    - Customer tier awareness
+    - Better personalization
+    - More natural language
+    """
+    
+    # Base templates by tier
+    templates = {
+        "vip": [
+            "Hi {name}! As one of our valued customers at {business}, we'd love to hear about your recent {service}. Your feedback helps us maintain the exceptional service you deserve.",
+            "{name}, thank you for choosing {business} for your {service}. We hope it exceeded your expectations! Would you share your experience?"
+        ],
+        "standard": [
+            "Hi {name}! We hope you loved your {service} at {business}. Mind sharing a quick review?",
+            "Hey {name}! Thanks for visiting {business}. How was your {service}? We'd appreciate your feedback!"
+        ],
+        "first_time": [
+            "Welcome to {business}, {name}! We hope your first {service} was great. We'd love to hear what you think!",
+            "Hi {name}! Thanks for trying {business}. Your first impression matters to us - would you leave a review?"
+        ]
+    }
+    
+    tier = customer_tier if customer_tier in templates else "standard"
+    template = random.choice(templates[tier])
+    
+    # Smart substitution
+    params = {
+        "name": customer_name.split()[0],  # First name only
+        "business": business_name,
+        "service": service_type or "visit"
+    }
+    
+    message = template.format(**params)
+    
+    # Add date context if recent (within 7 days)
+    if service_date:
         try:
-            return Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            date_obj = pd.to_datetime(service_date)
+            days_ago = (datetime.now() - date_obj).days
+            if days_ago <= 7:
+                message += f" (from {days_ago} days ago)"
         except:
-            return None
-    return None
+            pass
+    
+    return message
 
-twilio_client = init_twilio()
+# ==================== 3. OPT-OUT MANAGEMENT ====================
+def check_opt_out(phone):
+    """Check if phone number has opted out"""
+    return phone in st.session_state.opt_out_list
 
-# ================== SESSION STATE ==================
-if "df_processed" not in st.session_state:
-    st.session_state.df_processed = None
-if "messages_generated" not in st.session_state:
-    st.session_state.messages_generated = False
-if "campaign_sent" not in st.session_state:
-    st.session_state.campaign_sent = False
-if "current_step" not in st.session_state:
-    st.session_state.current_step = 1
-if "test_mode" not in st.session_state:
-    st.session_state.test_mode = False
-if "campaign_results" not in st.session_state:
-    st.session_state.campaign_results = None
+def add_opt_out(phone):
+    """Add phone to opt-out list"""
+    st.session_state.opt_out_list.add(phone)
+    # In production: Save to database
+    
+def handle_incoming_sms(from_number, body):
+    """
+    Handle incoming SMS responses
+    In production: Set up Twilio webhook
+    """
+    body_lower = body.lower().strip()
+    
+    if any(word in body_lower for word in ["stop", "unsubscribe", "opt out"]):
+        add_opt_out(from_number)
+        return "You've been unsubscribed. Reply START to resubscribe."
+    
+    if body_lower == "start":
+        st.session_state.opt_out_list.discard(from_number)
+        return "You're resubscribed to messages."
+    
+    return None  # Not a command
 
-# ================== UTILITY FUNCTIONS ==================
-def validate_phone_number(phone):
-    if pd.isna(phone) or phone == '':
-        return False, "Missing phone number"
+# ==================== 4. ENHANCED VALIDATION ====================
+def validate_review_link(link):
+    """Validate Google review link format"""
+    if pd.isna(link) or not link:
+        return False, "Missing review link"
     
-    phone_str = str(phone).strip()
+    link_str = str(link).strip()
     
-    if 'E' in phone_str.upper() or 'e' in phone_str:
-        try:
-            phone_str = "{:.0f}".format(float(phone_str))
-        except:
-            return False, "Invalid format"
-    
-    if phone_str.endswith('.0'):
-        phone_str = phone_str[:-2]
-    
-    phone_clean = re.sub(r'[\s\-\(\)]', '', phone_str)
-    
-    if not phone_clean.startswith('+'):
-        digits_only = re.sub(r'\D', '', phone_clean)
-        if len(digits_only) == 10:
-            phone_clean = "+1" + digits_only
-        elif len(digits_only) == 11 and digits_only.startswith('1'):
-            phone_clean = "+" + digits_only
-        else:
-            return False, "Invalid format: need 10-11 digits"
-    else:
-        digits = re.sub(r'\D', '', phone_clean)
-        phone_clean = "+" + digits
-    
-    regex_pattern = r'^\+\d{10,15}$'
-    if re.match(regex_pattern, phone_clean):
-        return True, phone_clean
-    
-    return False, "Invalid phone format"
-
-def parse_service_date(date_value):
-    if pd.isna(date_value) or date_value == '':
-        return None, None
-    
-    try:
-        if isinstance(date_value, (int, float)):
-            parsed_date = pd.to_datetime(date_value, unit='D', origin='1899-12-30')
-        else:
-            parsed_date = pd.to_datetime(date_value)
-        
-        formatted_date = parsed_date.strftime("%B %d, %Y")
-        return formatted_date, None
-    except:
-        return str(date_value), "Could not parse date"
-
-def check_csv(df):
-    required = ["Business Name","Customer Name","Email","Phone","Service Date","Review Link"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        st.error("Missing required columns: {}".format(', '.join(missing)))
-        return False
-    return True
-
-def validate_csv_data(df):
-    issues = []
-    
-    for idx, row in df.iterrows():
-        is_valid, result = validate_phone_number(row['Phone'])
-        if not is_valid:
-            issues.append("Row {}: {}".format(idx+2, result))
-        else:
-            df.at[idx, 'Phone'] = result
-        
-        if 'Service Date' in df.columns:
-            formatted_date, error = parse_service_date(row['Service Date'])
-            if formatted_date:
-                df.at[idx, 'Service Date'] = formatted_date
-            if error:
-                issues.append("Row {}: {}".format(idx+2, error))
-    
-    return df, issues
-
-def generate_message(business_name, customer_name, service_type="", service_date=""):
-    templates = [
-        "Hi {}! We hope you enjoyed your experience at {}. Your feedback means the world to us! Would you mind sharing a quick Google review?",
-        "Hey {}! Thanks for choosing {}. We'd love to hear about your experience. Could you leave us a Google review?",
-        "Hi {}! Thank you for visiting {}. If you had a great experience, we'd really appreciate a Google review!",
-        "Hello {}! We loved having you at {}. Would you take a moment to share your thoughts in a Google review?",
-        "Hi {}! Your opinion matters to us at {}. Could you help others by leaving a quick Google review?"
+    # Check for valid Google review URL patterns
+    valid_patterns = [
+        "google.com/maps/place",
+        "search.google.com/local/writereview",
+        "g.page/",
+        "maps.app.goo.gl"
     ]
     
-    if service_date and service_date.strip():
-        templates.extend([
-            "Hi {}! Hope you enjoyed your visit to {} on {}. Would you mind leaving us a Google review?",
-            "Hey {}! Thanks for visiting {} on {}. We'd love to hear about your experience in a Google review!"
-        ])
+    if not any(pattern in link_str for pattern in valid_patterns):
+        return False, "Invalid Google review link"
     
-    if service_type and service_type.strip():
-        templates.extend([
-            "Hi {}! We hope you loved your {} at {}. Would you share your experience with a Google review?",
-            "Hey {}! Thanks for choosing {} for your {}. Mind leaving us a quick review?"
-        ])
-        
-        if service_date and service_date.strip():
-            templates.append("Hi {}! Hope you enjoyed your {} at {} on {}. Could you leave us a Google review?")
-    
-    template = random.choice(templates)
-    
-    if service_date and service_type:
-        return template.format(customer_name, service_type, business_name, service_date)
-    elif service_date:
-        return template.format(customer_name, business_name, service_date)
-    elif service_type:
-        return template.format(customer_name, service_type, business_name)
-    else:
-        return template.format(customer_name, business_name)
+    return True, link_str
 
-def generate_messages_batch(df):
-    df_processed = df.copy()
-    messages = []
+def enhanced_csv_validation(df):
+    """More comprehensive CSV validation"""
+    issues = []
+    warnings = []
     
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for idx, row in df_processed.iterrows():
-        if pd.isna(row['Customer Name']) or pd.isna(row['Business Name']):
-            messages.append("")
-            continue
+    for idx, row in df.iterrows():
+        row_num = idx + 2  # Excel row number
         
-        service_type = row.get('Service Type', '') if 'Service Type' in df.columns else ''
-        service_date = row.get('Service Date', '') if 'Service Date' in df.columns else ''
+        # Phone validation
+        is_valid, result = validate_phone_number(row['Phone'])
+        if not is_valid:
+            issues.append(f"Row {row_num}: Invalid phone - {result}")
+        else:
+            df.at[idx, 'Phone'] = result
+            
+            # Check opt-out list
+            if check_opt_out(result):
+                warnings.append(f"Row {row_num}: {row['Customer Name']} has opted out")
         
-        message = generate_message(
-            str(row["Business Name"]),
-            str(row["Customer Name"]),
-            str(service_type) if not pd.isna(service_type) and service_type else "",
-            str(service_date) if not pd.isna(service_date) and service_date else ""
-        )
-        messages.append(message)
+        # Review link validation
+        is_valid, result = validate_review_link(row['Review Link'])
+        if not is_valid:
+            issues.append(f"Row {row_num}: {result}")
         
-        progress = (idx + 1) / len(df_processed)
-        progress_bar.progress(progress)
-        status_text.text("Generating messages... {}/{}".format(idx+1, len(df_processed)))
+        # Email format check (warning only)
+        email = str(row.get('Email', '')).strip()
+        if email and '@' not in email:
+            warnings.append(f"Row {row_num}: Suspicious email format")
+        
+        # Check for duplicate phones
+        duplicates = df[df['Phone'] == row['Phone']]
+        if len(duplicates) > 1:
+            warnings.append(f"Row {row_num}: Duplicate phone number")
     
-    progress_bar.empty()
-    status_text.empty()
-    
-    df_processed["Generated_Message"] = messages
-    return df_processed
+    return df, issues, warnings
 
-def send_sms_with_rate_limit(df, test_mode=False, delay_seconds=1):
-    if not twilio_client and not test_mode:
-        st.error("Twilio not configured")
-        return df, 0, len(df), 0
+# ==================== 5. ANALYTICS DASHBOARD ====================
+def render_analytics():
+    """Enhanced analytics dashboard"""
+    st.header("📊 Campaign Analytics")
     
-    sent, failed, skipped = 0, 0, 0
+    if not st.session_state.campaign_history:
+        st.info("No campaigns yet")
+        return
     
-    for col in ['SMS_Status', 'Error', 'Sent_Time']:
-        if col not in df.columns:
-            df[col] = ''
+    # Aggregate stats
+    total_sent = sum(c['sent'] for c in st.session_state.campaign_history)
+    total_failed = sum(c['failed'] for c in st.session_state.campaign_history)
+    avg_success = (total_sent / (total_sent + total_failed) * 100) if total_sent + total_failed > 0 else 0
     
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    # Metrics
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Campaigns", len(st.session_state.campaign_history))
+    col2.metric("Messages Sent", total_sent)
+    col3.metric("Avg Success Rate", f"{avg_success:.1f}%")
+    col4.metric("Opt-outs", len(st.session_state.opt_out_list))
     
-    for i, row in df.iterrows():
+    # Campaign timeline
+    st.subheader("Campaign History")
+    history_df = pd.DataFrame([
+        {
+            "Date": c['timestamp'].strftime("%Y-%m-%d %H:%M"),
+            "Sent": c['sent'],
+            "Failed": c['failed'],
+            "Success Rate": f"{(c['sent']/(c['sent']+c['failed'])*100):.1f}%" if c['sent']+c['failed'] > 0 else "0%",
+            "Mode": "Test" if c.get('test_mode') else "Live"
+        }
+        for c in st.session_state.campaign_history
+    ])
+    st.dataframe(history_df, use_container_width=True)
+
+# ==================== 6. CAMPAIGN SCHEDULER ====================
+def schedule_campaign(df, send_time):
+    """
+    Schedule campaign for future sending
+    In production: Use celery/background jobs
+    """
+    campaign_data = {
+        'df': df,
+        'scheduled_time': send_time,
+        'status': 'scheduled',
+        'created_at': datetime.now()
+    }
+    
+    # Store in session state (in production: use database)
+    if 'scheduled_campaigns' not in st.session_state:
+        st.session_state.scheduled_campaigns = []
+    
+    st.session_state.scheduled_campaigns.append(campaign_data)
+    return True
+
+# ==================== 7. CUSTOMER SEGMENTATION ====================
+def segment_customers(df):
+    """Segment customers for targeted campaigns"""
+    segments = {}
+    
+    # By service type
+    if 'Service Type' in df.columns:
+        for service_type in df['Service Type'].unique():
+            if pd.notna(service_type):
+                segments[f"Service: {service_type}"] = df[df['Service Type'] == service_type]
+    
+    # By recency (if service date available)
+    if 'Service Date' in df.columns:
         try:
-            if pd.isna(row['Customer Name']) or pd.isna(row['Phone']):
-                df.at[i, "SMS_Status"] = "⏭️ Skipped"
-                df.at[i, "Error"] = "Missing name or phone"
-                skipped += 1
-                continue
+            df['Date_Parsed'] = pd.to_datetime(df['Service Date'], errors='coerce')
+            df['Days_Ago'] = (datetime.now() - df['Date_Parsed']).dt.days
             
-            if 'Generated_Message' not in df.columns or pd.isna(row['Generated_Message']):
-                df.at[i, "SMS_Status"] = "❌ Failed"
-                df.at[i, "Error"] = "No generated message"
-                failed += 1
-                continue
-            
-            message = "{} {} Reply STOP to opt out.".format(row['Generated_Message'], row['Review Link'])
-            
-            if test_mode:
-                time.sleep(0.1)
-                df.at[i, "SMS_Status"] = "🧪 Test"
-                df.at[i, "Sent_Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                sent += 1
-            else:
-                twilio_client.messages.create(
-                    body=message,
-                    from_=TWILIO_PHONE,
-                    to=str(row["Phone"]).strip()
-                )
-                
-                df.at[i, "SMS_Status"] = "✅ Sent"
-                df.at[i, "Sent_Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                sent += 1
-                time.sleep(delay_seconds)
-            
-            progress = (i + 1) / len(df)
-            progress_bar.progress(progress)
-            status_text.text("{} messages... {}/{} (Sent: {}, Failed: {}, Skipped: {})".format(
-                'Testing' if test_mode else 'Sending', i+1, len(df), sent, failed, skipped))
-            
-        except Exception as e:
-            df.at[i, "SMS_Status"] = "❌ Failed"
-            df.at[i, "Error"] = str(e)
-            failed += 1
+            segments["Recent (0-7 days)"] = df[df['Days_Ago'] <= 7]
+            segments["This month (8-30 days)"] = df[(df['Days_Ago'] > 7) & (df['Days_Ago'] <= 30)]
+            segments["Older (30+ days)"] = df[df['Days_Ago'] > 30]
+        except:
+            pass
     
-    progress_bar.empty()
-    status_text.empty()
-    
-    return df, sent, failed, skipped
+    return segments
 
-# ================== STREAMLIT UI ==================
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Send Campaign", "Campaign History", "Settings"])
+# ==================== 8. RATE LIMITING IMPROVEMENTS ====================
+class RateLimiter:
+    """Smart rate limiter with burst handling"""
+    
+    def __init__(self, max_per_hour=100, max_burst=10):
+        self.max_per_hour = max_per_hour
+        self.max_burst = max_burst
+        self.sent_times = []
+    
+    def can_send(self):
+        """Check if we can send based on rate limits"""
+        now = datetime.now()
+        hour_ago = now - pd.Timedelta(hours=1)
+        
+        # Clean old entries
+        self.sent_times = [t for t in self.sent_times if t > hour_ago]
+        
+        # Check limits
+        if len(self.sent_times) >= self.max_per_hour:
+            return False, "Hourly limit reached"
+        
+        # Check burst (last 10 seconds)
+        recent = [t for t in self.sent_times if t > now - pd.Timedelta(seconds=10)]
+        if len(recent) >= self.max_burst:
+            return False, "Burst limit reached"
+        
+        return True, None
+    
+    def record_sent(self):
+        """Record a sent message"""
+        self.sent_times.append(datetime.now())
+    
+    def get_wait_time(self):
+        """Calculate how long to wait before next send"""
+        if not self.sent_times:
+            return 0
+        
+        now = datetime.now()
+        hour_ago = now - pd.Timedelta(hours=1)
+        recent_sends = [t for t in self.sent_times if t > hour_ago]
+        
+        if len(recent_sends) >= self.max_per_hour:
+            oldest = min(recent_sends)
+            wait = (oldest + pd.Timedelta(hours=1) - now).total_seconds()
+            return max(0, wait)
+        
+        return 1  # Default delay
 
-if page == "Send Campaign":
+# ==================== 9. EXPORT ENHANCEMENTS ====================
+def export_campaign_report(df, campaign_results):
+    """Generate comprehensive campaign report"""
+    report = {
+        "summary": {
+            "timestamp": campaign_results['timestamp'].isoformat(),
+            "total_recipients": len(df),
+            "sent": campaign_results['sent'],
+            "failed": campaign_results['failed'],
+            "skipped": campaign_results['skipped'],
+            "success_rate": f"{(campaign_results['sent']/(campaign_results['sent']+campaign_results['failed'])*100):.2f}%"
+        },
+        "failures": df[df['SMS_Status'].str.contains('Failed', na=False)][
+            ['Customer Name', 'Phone', 'Error']
+        ].to_dict('records'),
+        "opt_outs": list(st.session_state.opt_out_list)
+    }
     
-    steps = ["📤 Upload CSV", "✍️ Generate Messages", "🚀 Send Campaign"]
-    cols = st.columns(3)
-    for i, (col, step) in enumerate(zip(cols, steps), 1):
-        if i < st.session_state.current_step:
-            col.success("✅ {}".format(step))
-        elif i == st.session_state.current_step:
-            col.info("▶️ {}".format(step))
-        else:
-            col.text("⏸️ {}".format(step))
-    
-    st.markdown("---")
-    
-    with st.expander("📋 Download CSV Template", expanded=False):
-        template_df = pd.DataFrame({
-            "Business Name": ["Garden Cafe"],
-            "Customer Name": ["John Smith"], 
-            "Email": ["john@example.com"],
-            "Phone": ["+15555550100"],
-            "Service Date": ["2024-01-15"],
-            "Service Type": ["Lunch Service"],
-            "Review Link": ["https://search.google.com/local/writereview?placeid=YOUR_PLACE_ID"]
-        })
-        
-        csv_buffer = io.StringIO()
-        template_df.to_csv(csv_buffer, index=False)
-        st.download_button(
-            "📥 Download CSV Template", 
-            data=csv_buffer.getvalue(), 
-            file_name="reviewgarden_template.csv", 
-            mime="text/csv"
-        )
+    return report
 
-    st.subheader("📤 Step 1: Upload Customer CSV")
-    uploaded_file = st.file_uploader("Choose your customer CSV file", type="csv")
+# ==================== 10. UI IMPROVEMENTS ====================
+def render_progress_with_eta(current, total, start_time):
+    """Show progress bar with ETA"""
+    elapsed = (datetime.now() - start_time).total_seconds()
+    rate = current / elapsed if elapsed > 0 else 0
+    remaining = total - current
+    eta_seconds = remaining / rate if rate > 0 else 0
     
-    if uploaded_file:
-        df = pd.read_csv(uploaded_file)
-        df.columns = df.columns.str.strip()
-        
-        if check_csv(df):
-            df_clean, issues = validate_csv_data(df)
-            
-            if issues:
-                st.warning("⚠️ Found {} validation issues".format(len(issues)))
-                with st.expander("View Issues"):
-                    for issue in issues[:10]:
-                        st.text(issue)
-                    if len(issues) > 10:
-                        st.text("... and {} more issues".format(len(issues)-10))
-            
-            st.success("✅ CSV loaded: {} customers".format(len(df_clean)))
-            st.session_state.df_processed = df_clean
-            if st.session_state.current_step == 1:
-                st.session_state.current_step = 2
-            
-            with st.expander("📊 Preview Data"):
-                st.dataframe(df_clean)
-
-    # STEP 2
-    if st.session_state.current_step >= 2 and st.session_state.df_processed is not None:
-        st.markdown("---")
-        st.subheader("✍️ Step 2: Generate Messages")
-        
-        has_messages = 'Generated_Message' in st.session_state.df_processed.columns
-        
-        if not has_messages:
-            st.info("Click below to generate personalized messages for each customer")
-            
-            if st.button("🎯 Generate Messages", type="primary", key="gen_btn"):
-                with st.spinner("Generating..."):
-                    df_processed = generate_messages_batch(st.session_state.df_processed)
-                    st.session_state.df_processed = df_processed
-                    st.session_state.messages_generated = True
-                    st.session_state.current_step = 3
-                    st.success("✅ Messages generated!")
-                    time.sleep(1)
-                    st.rerun()
-        else:
-            st.success("✅ Messages generated!")
-            
-            with st.expander("👀 Preview Messages"):
-                for idx, row in st.session_state.df_processed.head(5).iterrows():
-                    if not pd.isna(row['Customer Name']):
-                        st.markdown("**{}** ({})".format(row['Customer Name'], row['Phone']))
-                        st.text(row.get('Generated_Message', ''))
-                        st.markdown("---")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("➡️ Continue to Step 3", type="primary", key="continue_btn"):
-                    st.session_state.current_step = 3
-                    st.rerun()
-            with col2:
-                if st.button("🔄 Regenerate", key="regen_btn"):
-                    st.session_state.df_processed = st.session_state.df_processed.drop(columns=['Generated_Message'])
-                    st.session_state.messages_generated = False
-                    st.rerun()
-
-    # STEP 3
-    if (st.session_state.current_step >= 3 and 
-        st.session_state.df_processed is not None and 
-        'Generated_Message' in st.session_state.df_processed.columns and
-        not st.session_state.campaign_sent):
-        
-        st.markdown("---")
-        st.subheader("🚀 Step 3: Launch Campaign")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            test_mode = st.checkbox("🧪 Test Mode", value=st.session_state.test_mode)
-            st.session_state.test_mode = test_mode
-        
-        with col2:
-            confirm = st.checkbox("✓ I have permission")
-        
-        with col3:
-            delay = st.number_input("Delay (sec)", 0.5, 5.0, 1.0, 0.5)
-        
-        st.markdown("### 📊 Summary")
-        cols = st.columns(4)
-        total = len(st.session_state.df_processed)
-        valid = st.session_state.df_processed['Phone'].notna().sum()
-        
-        cols[0].metric("Total", total)
-        cols[1].metric("Valid Phones", valid)
-        cols[2].metric("Ready", len(st.session_state.df_processed[st.session_state.df_processed['Generated_Message'].notna()]))
-        cols[3].metric("Est. Time", "{} min".format(int(valid * delay / 60)))
-        
-        st.markdown("---")
-        
-        if confirm or test_mode:
-            if st.button("{}".format('🧪 Test' if test_mode else '🚀 LAUNCH'), type="primary", use_container_width=True):
-                df = st.session_state.df_processed.copy()
-                
-                st.info("{} starting...".format('Test' if test_mode else 'Campaign'))
-                
-                df, sent, failed, skipped = send_sms_with_rate_limit(df, test_mode, delay)
-                
-                st.session_state.df_processed = df
-                st.session_state.campaign_sent = True
-                st.session_state.campaign_results = {
-                    'sent': sent,
-                    'failed': failed,
-                    'skipped': skipped,
-                    'timestamp': datetime.now(),
-                    'test_mode': test_mode
-                }
-                
-                if not test_mode:
-                    st.balloons()
-                
-                st.rerun()
-        else:
-            st.warning("⚠️ Please confirm permission")
+    progress = current / total
+    eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
     
-    # RESULTS
-    if st.session_state.campaign_sent and st.session_state.campaign_results:
-        st.markdown("---")
-        st.subheader("✅ Complete!")
-        
-        r = st.session_state.campaign_results
-        
-        if r['test_mode']:
-            st.info("🧪 Test mode - no real messages sent")
-        
-        cols = st.columns(4)
-        cols[0].metric("✅ Sent", r['sent'])
-        cols[1].metric("❌ Failed", r['failed'])
-        cols[2].metric("⏭️ Skipped", r['skipped'])
-        rate = (r['sent']/(r['sent']+r['failed'])*100 if r['sent']+r['failed'] > 0 else 0)
-        cols[3].metric("Success", "{:.1f}%".format(rate))
-        
-        with st.expander("📋 Results"):
-            st.dataframe(st.session_state.df_processed[["Customer Name", "Phone", "SMS_Status", "Sent_Time", "Error"]].fillna(""))
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            csv = st.session_state.df_processed.to_csv(index=False)
-            st.download_button("📥 Download", csv, "results_{}.csv".format(datetime.now().strftime('%Y%m%d_%H%M%S')), "text/csv")
-        with col2:
-            if st.button("🔄 New Campaign"):
-                for key in ['df_processed', 'messages_generated', 'campaign_sent', 'campaign_results']:
-                    st.session_state[key] = None if 'results' in key else False
-                st.session_state.current_step = 1
-                st.rerun()
-
-elif page == "Campaign History":
-    st.header("📊 Campaign History")
-    
-    if st.session_state.campaign_results:
-        st.subheader("Latest Campaign")
-        r = st.session_state.campaign_results
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Date", r['timestamp'].strftime("%Y-%m-%d %H:%M"))
-            st.metric("Mode", "Test" if r['test_mode'] else "Live")
-        with col2:
-            st.metric("Sent", r['sent'])
-            st.metric("Failed", r['failed'])
-    else:
-        st.info("No history yet")
-
-elif page == "Settings":
-    st.header("⚙️ Settings")
-    
-    st.subheader("📱 Twilio")
-    if twilio_client:
-        st.success("✅ Connected")
-        st.code("Phone: {}".format(TWILIO_PHONE))
-    else:
-        st.error("❌ Not configured")
-        st.markdown("""
-        Create `.env` file:
-        ```
-        TWILIO_ACCOUNT_SID=your_sid
-        TWILIO_AUTH_TOKEN=your_token
-        TWILIO_PHONE_NUMBER=your_phone
-        ```
-        """)
-    
-    st.markdown("---")
-    if st.button("🗑️ Clear Session"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
-
-st.markdown("---")
-st.markdown("🌿 **ReviewGarden** - Grow your reputation honestly")
+    st.progress(progress)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Progress", f"{current}/{total}")
+    col2.metric("Rate", f"{rate:.1f}/sec")
+    col3.metric("ETA", eta_str)
