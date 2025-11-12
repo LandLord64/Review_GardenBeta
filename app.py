@@ -29,8 +29,8 @@ SHEET_ID = os.getenv("SHEET_ID")
 # Initialize OpenAI client
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY and OPENAI_API_KEY != "not-set-yet" else None
 
-GMAIL_CREDS = "credentials/gmail_credentials.json"
-SERVICE_ACCOUNT = "credentials/service_account.json"
+GMAIL_CREDS = "gmail_credentials.json"
+SERVICE_ACCOUNT = "service_account.json"
 TOKEN_FILE = "token.pkl"
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
@@ -371,3 +371,4 @@ elif page == "Settings":
 
 st.markdown("---")
 st.markdown("🌿 **ReviewGarden** - Grow your reputation honestly")
+
