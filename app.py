@@ -121,21 +121,29 @@ def send_sms(df):
         return df, 0, len(df)
         
     sent, failed = 0, 0
-    progress = st.progress(0)
-    status_text = st.empty()
     
     for i, row in df.iterrows():
         try:
+            # DEBUG: Check if message exists
+            if 'Generated_Message' not in row or pd.isna(row['Generated_Message']):
+                st.error(f"❌ No generated message for {row['Customer Name']}")
+                df.at[i, "SMS_Status"] = "❌"
+                df.at[i, "Error"] = "No AI message generated"
+                failed += 1
+                continue
+            
             message = f"{row['Generated_Message']} {row['Review Link']} Reply STOP to opt out."
             
-            # DEBUG: Show what we're sending
-            st.write(f"📱 Attempting SMS to: {row['Phone']}")
+            st.write(f"📱 Sending to: {row['Phone']}")
+            st.write(f"Message: {message}")
             
+            # Send SMS
             twilio_client.messages.create(
                 body=message,
                 from_=TWILIO_PHONE,
                 to=str(row["Phone"]).strip()
             )
+            
             df.at[i, "SMS_Status"] = "✅"
             sent += 1
             st.success(f"✅ SMS sent to: {row['Phone']}")
@@ -144,13 +152,10 @@ def send_sms(df):
             df.at[i, "SMS_Status"] = "❌"
             df.at[i, "Error"] = str(e)
             failed += 1
-            st.error(f"❌ SMS failed to {row['Phone']}: {str(e)}")
-        
-        progress.progress((i + 1) / len(df))
-        status_text.text(f"Progress {i + 1}/{len(df)} | ✅ {sent} | ❌ {failed}")
+            st.error(f"❌ SMS failed: {str(e)}")
     
     return df, sent, failed
-
+    
 def send_email(df, subject=None):
     try:
         service = gmail_auth()
@@ -387,3 +392,4 @@ elif page == "Settings":
 
 st.markdown("---")
 st.markdown("🌿 **ReviewGarden** - Grow your reputation honestly")
+
