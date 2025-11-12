@@ -10,14 +10,13 @@ import sqlite3
 from datetime import datetime
 from contextlib import contextmanager
 from typing import Optional, Tuple, List, Dict, Any
-from twilio.rest import Client
 from dotenv import load_dotenv
 
 # ================== CONFIGURATION ==================
 # Load environment variables
 load_dotenv()
 
-def get_env_var(var_name: str, required: bool = True) -> Optional[str]:
+def get_env_var(var_name: str, required: bool = False) -> Optional[str]:
     """Safely get environment variables with validation"""
     value = os.getenv(var_name)
     if required and not value:
@@ -26,9 +25,17 @@ def get_env_var(var_name: str, required: bool = True) -> Optional[str]:
             st.stop()
     return value
 
-TWILIO_ACCOUNT_SID = get_env_var("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = get_env_var("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE = get_env_var("TWILIO_PHONE_NUMBER")
+# Try to import Twilio, but make it optional
+try:
+    from twilio.rest import Client
+    TWILIO_AVAILABLE = True
+except ImportError:
+    TWILIO_AVAILABLE = False
+    Client = None
+
+TWILIO_ACCOUNT_SID = get_env_var("TWILIO_ACCOUNT_SID", required=False)
+TWILIO_AUTH_TOKEN = get_env_var("TWILIO_AUTH_TOKEN", required=False)
+TWILIO_PHONE = get_env_var("TWILIO_PHONE_NUMBER", required=False)
 
 # Configuration settings
 class AppConfig:
@@ -102,6 +109,10 @@ st.title("🌿 ReviewGarden - Review Booster")
 @st.cache_resource
 def init_twilio():
     """Initialize Twilio client with error handling"""
+    if not TWILIO_AVAILABLE:
+        logging.warning("Twilio package not available")
+        return None
+    
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
         logging.warning("Twilio credentials not configured")
         return None
@@ -126,7 +137,7 @@ if "initialized" not in st.session_state:
     st.session_state.messages_generated = False
     st.session_state.campaign_sent = False
     st.session_state.current_step = 1
-    st.session_state.test_mode = False
+    st.session_state.test_mode = True  # Default to test mode for safety
     st.session_state.campaign_results = None
     st.session_state.sending_in_progress = False
     st.session_state.campaign_name = f"Campaign_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -411,7 +422,7 @@ def send_sms_enhanced(twilio_client: Client, to_number: str, message: str, from_
 def send_sms_with_rate_limit(df: pd.DataFrame, test_mode: bool = False, delay_seconds: float = 1.0) -> Tuple[pd.DataFrame, int, int, int]:
     """Enhanced SMS sending with rate limiting and comprehensive tracking"""
     if not twilio_client and not test_mode:
-        st.error("❌ Twilio not configured properly")
+        st.error("❌ Twilio not configured properly. Please check your credentials or run in Test Mode.")
         return df, 0, len(df), 0
     
     sent, failed, skipped = 0, 0, 0
@@ -559,6 +570,15 @@ page = st.sidebar.radio("Go to", ["Send Campaign", "Campaign History", "Settings
 
 if page == "Send Campaign":
     
+    # Show Twilio status warning if not configured
+    if not twilio_client:
+        st.warning("""
+        🔧 **Twilio Not Configured** 
+        - The app is running in **Test Mode Only**
+        - No real SMS messages will be sent
+        - To enable real SMS, configure Twilio credentials in Settings
+        """)
+    
     steps = ["📤 Upload CSV", "✍️ Generate Messages", "🚀 Send Campaign"]
     cols = st.columns(3)
     for i, (col, step) in enumerate(zip(cols, steps), 1):
@@ -701,11 +721,16 @@ if page == "Send Campaign":
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.session_state.test_mode = st.checkbox(
-                "🧪 Test Mode (Don't actually send)", 
-                value=st.session_state.test_mode,
-                help="Preview what will happen without sending real SMS. Perfect for testing!"
-            )
+            # Force test mode if Twilio not configured
+            if not twilio_client:
+                st.session_state.test_mode = True
+                st.info("🧪 Test Mode (Twilio not configured)")
+            else:
+                st.session_state.test_mode = st.checkbox(
+                    "🧪 Test Mode (Don't actually send)", 
+                    value=st.session_state.test_mode,
+                    help="Preview what will happen without sending real SMS. Perfect for testing!"
+                )
         
         with col2:
             confirm_send = st.checkbox(
@@ -743,11 +768,17 @@ if page == "Send Campaign":
                 button_text = '🧪 Run Test Campaign' if st.session_state.test_mode else '🚀 LAUNCH CAMPAIGN'
                 button_help = "Send test messages (no real SMS)" if st.session_state.test_mode else "Send real SMS messages to customers"
                 
+                if not twilio_client and not st.session_state.test_mode:
+                    st.error("❌ Cannot send real SMS - Twilio not configured")
+                    launch_disabled = True
+                else:
+                    launch_disabled = st.session_state.sending_in_progress
+                
                 launch_button = st.button(
                     button_text,
                     type="primary" if not st.session_state.test_mode else "secondary",
                     use_container_width=True,
-                    disabled=st.session_state.sending_in_progress,
+                    disabled=launch_disabled,
                     help=button_help
                 )
                 
@@ -842,20 +873,44 @@ elif page == "Settings":
     if twilio_client:
         st.success("✅ Twilio is connected and ready")
         st.code(f"Phone Number: {TWILIO_PHONE}")
-        st.code(f"Account SID: {TWILIO_ACCOUNT_SID[:8]}...")
+        if TWILIO_ACCOUNT_SID:
+            st.code(f"Account SID: {TWILIO_ACCOUNT_SID[:8]}...")
     else:
         st.error("❌ Twilio not configured")
         st.markdown("""
         **To configure Twilio:**
-        1. Create a `.env` file in your project directory
-        2. Add the following variables:
+        
+        1. **Install Twilio package:**
+        ```bash
+        pip install twilio
+        ```
+        
+        2. **Create a `.env` file in your project directory**
+        
+        3. **Add the following variables to `.env`:**
         ```
         TWILIO_ACCOUNT_SID=your_account_sid_here
         TWILIO_AUTH_TOKEN=your_auth_token_here  
         TWILIO_PHONE_NUMBER=your_twilio_phone_here
         ```
-        3. Restart the application
+        
+        4. **Get your credentials from:**
+           - [Twilio Console](https://console.twilio.com)
+           - Your Account SID and Auth Token are in the dashboard
+           - Buy a phone number in Twilio for sending SMS
+        
+        5. **Restart the application**
         """)
+        
+        with st.expander("🔧 Manual Configuration (Alternative)"):
+            st.info("You can also set environment variables in your deployment platform:")
+            st.code("""
+            # For Streamlit Cloud
+            In your app settings, add:
+            TWILIO_ACCOUNT_SID=your_sid
+            TWILIO_AUTH_TOKEN=your_token
+            TWILIO_PHONE_NUMBER=your_number
+            """)
     
     st.markdown("---")
     st.subheader("🔒 Data Privacy & Security")
@@ -883,15 +938,19 @@ elif page == "Settings":
     st.markdown("---")
     st.subheader("🛠️ Application Management")
     
-    if st.button("🗑️ Clear All Session Data", type="secondary"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.success("All session data cleared!")
-        st.rerun()
+    col1, col2 = st.columns(2)
     
-    if st.button("🔄 Restart Application", type="primary"):
-        st.cache_resource.clear()
-        st.rerun()
+    with col1:
+        if st.button("🗑️ Clear All Session Data", type="secondary", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.success("All session data cleared!")
+            st.rerun()
+    
+    with col2:
+        if st.button("🔄 Restart Application", type="primary", use_container_width=True):
+            st.cache_resource.clear()
+            st.rerun()
 
 st.markdown("---")
 st.markdown("🌿 **ReviewGarden** - Grow your reputation honestly | Made with Streamlit")
