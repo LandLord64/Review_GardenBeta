@@ -12,20 +12,8 @@ from contextlib import contextmanager
 from typing import Optional, Tuple, List, Dict, Any
 from twilio.rest import Client
 from dotenv import load_dotenv
-from pydantic import BaseSettings
 
 # ================== CONFIGURATION ==================
-class Settings(BaseSettings):
-    twilio_account_sid: str
-    twilio_auth_token: str 
-    twilio_phone_number: str
-    default_delay_seconds: float = 1.0
-    max_campaign_size: int = 1000
-    allowed_phone_countries: list = ["US", "CA"]
-    
-    class Config:
-        env_file = ".env"
-
 # Load environment variables
 load_dotenv()
 
@@ -42,12 +30,13 @@ TWILIO_ACCOUNT_SID = get_env_var("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = get_env_var("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE = get_env_var("TWILIO_PHONE_NUMBER")
 
-# Initialize settings
-try:
-    settings = Settings()
-except Exception as e:
-    st.error(f"Configuration error: {e}")
-    settings = None
+# Configuration settings
+class AppConfig:
+    default_delay_seconds: float = 1.0
+    max_campaign_size: int = 1000
+    allowed_phone_countries: list = ["US", "CA"]
+
+config = AppConfig()
 
 # ================== LOGGING SETUP ==================
 def setup_logging():
@@ -182,11 +171,6 @@ def validate_phone_number(phone: str) -> Tuple[bool, str]:
     regex_pattern = r'^\+\d{10,15}$'
     if not re.match(regex_pattern, phone_clean):
         return False, "Invalid international format"
-    
-    # Country code validation (basic)
-    country_code = phone_clean[1:3]  # Get digits after +
-    if country_code not in ['1']:  # Expand this list as needed
-        logging.warning(f"Uncommon country code: {country_code}")
     
     return True, phone_clean
 
