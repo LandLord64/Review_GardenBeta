@@ -29,8 +29,9 @@ SHEET_ID = os.getenv("SHEET_ID")
 # Initialize OpenAI client
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY and OPENAI_API_KEY != "not-set-yet" else None
 
-GMAIL_CREDS = "gmail_credentials.json"
-SERVICE_ACCOUNT = "service_account.json"
+# FIXED: Gmail credentials path - use direct file
+GMAIL_CREDS = "gmail_credentials.json"  # Changed from credentials/ folder
+SERVICE_ACCOUNT = "service_account.json"  # Also need this file
 TOKEN_FILE = "token.pkl"
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
@@ -95,6 +96,11 @@ def generate_ai_message(business_name, customer_name, service_type=""):
         return f"Hi {customer_name}! Hope you enjoyed your experience at {business_name}. Please leave us a review!"
 
 def gmail_auth():
+    # FIXED: Better error handling for missing file
+    if not os.path.exists(GMAIL_CREDS):
+        st.error(f"Gmail credentials file not found: {GMAIL_CREDS}")
+        raise FileNotFoundError(f"Gmail credentials file not found: {GMAIL_CREDS}")
+    
     creds = None
     if os.path.exists(TOKEN_FILE):
         with open(TOKEN_FILE, "rb") as f:
@@ -121,6 +127,10 @@ def send_sms(df):
     for i, row in df.iterrows():
         try:
             message = f"{row['Generated_Message']} {row['Review Link']} Reply STOP to opt out."
+            
+            # DEBUG: Show what we're sending
+            st.write(f"📱 Attempting SMS to: {row['Phone']}")
+            
             twilio_client.messages.create(
                 body=message,
                 from_=TWILIO_PHONE,
@@ -128,10 +138,13 @@ def send_sms(df):
             )
             df.at[i, "SMS_Status"] = "✅"
             sent += 1
+            st.success(f"✅ SMS sent to: {row['Phone']}")
+            
         except Exception as e:
             df.at[i, "SMS_Status"] = "❌"
             df.at[i, "Error"] = str(e)
             failed += 1
+            st.error(f"❌ SMS failed to {row['Phone']}: {str(e)}")
         
         progress.progress((i + 1) / len(df))
         status_text.text(f"Progress {i + 1}/{len(df)} | ✅ {sent} | ❌ {failed}")
@@ -165,13 +178,18 @@ Thank you,
             message['subject'] = subject or f"Share your experience with {row['Business Name']}"
             raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
             
+            st.write(f"📧 Attempting email to: {row['Email']}")
+            
             service.users().messages().send(userId="me", body={"raw": raw}).execute()
             df.at[i, "Email_Status"] = "✅"
             sent += 1
+            st.success(f"✅ Email sent to: {row['Email']}")
+            
         except Exception as e:
             df.at[i, "Email_Status"] = "❌"
             df.at[i, "Error"] = str(e)
             failed += 1
+            st.error(f"❌ Email failed to {row['Email']}: {str(e)}")
         
         progress.progress((i + 1) / len(df))
         status_text.text(f"Progress {i + 1}/{len(df)} | ✅ {sent} | ❌ {failed}")
@@ -304,13 +322,11 @@ if page == "Send Campaign":
                 st.subheader("📱 Sending SMS...")
                 df, sms_sent, sms_failed = send_sms(df)
                 total_sent += sms_sent
-                st.success(f"SMS: {sms_sent} sent, {sms_failed} failed")
             
             if delivery in ["Email only", "Both"]:
                 st.subheader("📧 Sending Emails...")
                 df, email_sent, email_failed = send_email(df, email_subject)
                 total_sent += email_sent
-                st.success(f"Emails: {email_sent} sent, {email_failed} failed")
 
             # Log campaign
             if log_campaign_to_sheet(df, delivery, business_name):
@@ -371,4 +387,3 @@ elif page == "Settings":
 
 st.markdown("---")
 st.markdown("🌿 **ReviewGarden** - Grow your reputation honestly")
-
