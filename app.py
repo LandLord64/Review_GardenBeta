@@ -215,3 +215,4 @@ elif page == "Settings":
 
 st.markdown("---")
 st.markdown("🌿 **ReviewGarden** - Grow your reputation honestly")
+
